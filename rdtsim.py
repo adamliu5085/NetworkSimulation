@@ -111,30 +111,49 @@ class EntityA:
     def __init__(self, seqnum_limit):
         self.seqnum_limit = seqnum_limit
         self.next_seqnum = 0
+        self.ackNum = 0
+        self.checksum = 0
+        self.q = []
+        self.in_flight = False
+
 
     # Called from layer 5, passed the data to be sent to other side.
     # The argument `message` is a Msg containing the data to be sent.
     def output(self, message):
-        # Create packet with the message data
-        # TODO: NEEDS A CHECKSUM
-        pkt = Pkt(self.next_seqnum, 0, 0, message.data)
+
+        # Create packet with the seqnum, acknum, checksum, and message data.
+        # Parameters are: self, acknowledgement number, checksum, data
+        checksum = sum(len(field) for field in [self.next_seqnum, self.ackNum, message.data])
+        pkt = Pkt(self.next_seqnum, self.ackNum, checksum, message.data)
 
         # Advance the sequence number
         self.next_seqnum = 1 - self.next_seqnum
 
-        # Dump onto the wire
+        # Dump onto the wire or q the packet created
+        self.q.append(pkt)
         # TODO: CANT ALWAYS DO THIS...
         # if packet in flight cant transmit
 
             # Buffer, engueue for transmission
-        to_layer3(self, pkt)
+        to_layer3(self, self.q.pop())
+        self.in_flight = True
+        start_timer(self, 5.00)
 
     # Called from layer 3, when a packet arrives for layer 4 at EntityA.
     # The argument `packet` is a Pkt containing the newly arrived packet.
     def input(self, packet):
         # TODO: DRAIN THE SEND Q
         # TODO: IF ACK COMES IN MARK AS NOT IN FLIGHT ANYMORE THEN SEND NEXT
-        pass
+        if packet.in_flight and packet.acknum == (1-packet.next_seqnum):
+            packet.in_flight = False
+            checksum = sum(len(field) for field in [packet.next_seqnum, packet.ackNum, packet.data])
+            if not packet.checksum == checksum:
+                # TODO: Retransmit last packet
+                pass
+            else:
+                # TODO: Send next packet
+                pass
+
 
     # Called when A's timer goes off.
     def timer_interrupt(self):
@@ -147,15 +166,21 @@ class EntityB:
     #
     # See comment for the meaning of seqnum_limit.
     def __init__(self, seqnum_limit):
-        pass
+        self.seqnum_limit = seqnum_limit
+        self.next_seqnum = 0
 
     # Called from layer 3, when a packet arrives for layer 4 at EntityB.
     # The argument `packet` is a Pkt containing the newly arrived packet.
     def input(self, packet):
 
-        # Sends straight back
-        # TODO: THIS WONT WORK JUST ITS JUST A START
-        to_layer5(self, Msg(packet.payload))
+        # Put the Acknowledgement number into this and send straight back
+        pkt = Pkt(self.next_seqnum, packet.acknum, packet.checksum, packet.data)
+
+        # Advance the sequence number
+        self.next_seqnum = 1 - self.next_seqnum
+
+        # TODO: CHECK THIS
+        to_layer5(self, pkt)
 
     # Called when B's timer goes off.
     def timer_interrupt(self):
