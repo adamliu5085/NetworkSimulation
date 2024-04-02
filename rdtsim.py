@@ -36,6 +36,7 @@
 ##
 
 import argparse
+import queue
 from copy import deepcopy
 from enum import Enum, auto
 import random
@@ -109,12 +110,10 @@ class EntityA:
     # zero and seqnum_limit-1, inclusive.  E.g., if seqnum_limit is 16, then
     # all seqnums must be in the range 0-15.
     def __init__(self, seqnum_limit):
-        self.seqnum_limit = seqnum_limit
+        self.seqnum = 0
         self.next_seqnum = 0
-        self.ackNum = 0
-        self.checksum = 0
+        self.acknum = 0
         self.q = []
-        self.firstPacket = True
         self.in_flight = False
 
     # Called from layer 5, passed the data to be sent to other side.
@@ -122,54 +121,53 @@ class EntityA:
     def output(self, message):
 
         # Create packet with the seqnum, acknum, checksum, and message data.
-        # Parameters are: self, acknowledgement number, checksum, data
-        checksum = sum(sys.getsizeof(field) for field in [self.next_seqnum, self.next_seqnum, message.data])
-        pkt = Pkt(self.next_seqnum, self.ackNum, checksum, message.data)
+        checksum = self.seqnum + self.seqnum + sum(message.data)
+        pkt = Pkt(self.seqnum, self.seqnum, checksum, message.data)
 
-        # Set the next ackNum, Advance the sequence number
-        self.next_seqnum = 1 - self.next_seqnum
-        self.ackNum = 1 - self.ackNum
+        # Advance the sequence number
+        self.seqnum = 1 - self.seqnum
 
         # Dump onto the wire or q the packet created
         self.q.append(pkt)
-        if self.firstPacket:
-            self.transmitter()
-            self.firstPacket = False
-            self.in_flight = True
-        # if not self.in_flight:
-        #     to_layer3(self, self.q[0])
-        #     self.in_flight = True
+        if not self.in_flight:
+            self.transmit()
 
-    def transmitter(self):
-        while not self.in_flight:
-            if len(self.q) == 0:
-                break
+    # Sends a packet to entity B over layer 3 and sets it in flight
+    def transmit(self):
+        self.in_flight = True
+        start_timer(self, 18)
+        if len(self.q) > 0:
             to_layer3(self, self.q[0])
-            # time.sleep(0.1)
-
+        else:
+            to_layer3(self, self.last_pkt)
 
     # Called from layer 3, when a packet arrives for layer 4 at EntityA.
     # The argument `packet` is a Pkt containing the newly arrived packet.
     def input(self, packet):
-        # TODO: DRAIN THE SEND Q
-        self.in_flight = False
 
-        # TODO: IF ACK COMES IN MARK AS NOT IN FLIGHT ANYMORE THEN SEND NEXT
-        checksum = sum(sys.getsizeof(field) for field in [packet.seqnum, packet.acknum, packet.payload])
-        if self.ackNum == packet.acknum and packet.checksum == checksum:
-            if len(self.q) > 0:
-                self.q.pop(0)
-            if len(self.q) > 0:
-                self.transmitter()
-                self.in_flight = True
+        # Stop the timeout from triggering
+        stop_timer(self)
 
+        # Compute the checksum and check the sequence number and ack
+        checksum = self.next_seqnum + self.acknum + sum(packet.payload)
+        if self.acknum == packet.acknum and self.next_seqnum == packet.seqnum and self.q[0].checksum == checksum:
+            self.in_flight = False
+            self.acknum = 1 - self.acknum
+            self.next_seqnum = 1 - self.next_seqnum
+
+            # Packet was delivered, pop the Q and transmit the next
+            if len(self.q) > 0:
+                self.last_pkt = self.q.pop(0)
+            if len(self.q) > 0:
+                self.transmit()
+
+        # Otherwise, the packet needs to be retransmitted
         else:
-            self.transmitter()
-            self.in_flight = True
+            self.transmit()
 
-    # Called when A's timer goes off.
+    # Called when A's timer goes off. Retransmit a lost packet
     def timer_interrupt(self):
-        to_layer3(self, self.q[0])
+        self.transmit()
 
 
 class EntityB:
@@ -178,33 +176,29 @@ class EntityB:
     #
     # See comment for the meaning of seqnum_limit.
     def __init__(self, seqnum_limit):
-        self.seqnum_limit = seqnum_limit
-        self.next_seqnum = 0
-        self.ackNum = 0
-        self.checksum = 0
+        self.seqnum = 0
+        self.acknum = 0
 
     # Called from layer 3, when a packet arrives for layer 4 at EntityB.
     # The argument `packet` is a Pkt containing the newly arrived packet.
     def input(self, packet):
-        # Put the Acknowledgement number into this and send straight back
-        # TODO: CHECK ACK, CHECKSUM AND FLIGHT AND DETERMINE WHAT ACK IS NEXT
-        checksum = sum(sys.getsizeof(field) for field in [self.next_seqnum, self.next_seqnum, packet.payload])
-        if packet.acknum == self.ackNum and packet.checksum == checksum:
 
-            # The packet is good, send it to the network
+        # Compute the checksum and check the sequence number and ack
+        checksum = self.seqnum + self.acknum + sum(packet.payload)
+        if packet.seqnum == self.seqnum and packet.acknum == self.acknum and packet.checksum == checksum:
+
+            # The packet is good, send it to the network, send ack to entity A
             to_layer5(self, Msg(packet.payload))
-
-            # Advance the sequence number and acknum
-            self.next_seqnum = 1 - self.next_seqnum
-            self.acknum = 1 - self.ackNum
-
-            # Send next acknum to entity A
-            pkt = Pkt(self.next_seqnum, self.ackNum, checksum, packet.payload)
+            pkt = Pkt(self.seqnum, self.acknum, checksum, packet.payload)
             to_layer3(self, pkt)
+
+            # Advance the sequence number and use it as an acknum
+            self.seqnum = 1 - self.seqnum
+            self.acknum = 1 - self.acknum
 
         # Resend the packet intended to be received
         else:
-            pkt = Pkt(self.next_seqnum, self.ackNum, checksum, packet.payload)
+            pkt = Pkt(1 - self.seqnum, 1 - self.seqnum, checksum, packet.payload)
             to_layer3(self, pkt)
 
     # Called when B's timer goes off.
