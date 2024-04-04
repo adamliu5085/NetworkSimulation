@@ -154,6 +154,8 @@ class EntityA:
             self.in_flight = False
             self.acknum = 1 - self.acknum
             self.next_seqnum = 1 - self.next_seqnum
+            if TRACE > 0:
+                print("Entity A - Acknowledged Packet sequence number: " + str(self.acknum))
 
             # Packet was delivered, pop the Q and transmit the next
             if len(self.q) > 0:
@@ -163,10 +165,14 @@ class EntityA:
 
         # Otherwise, the packet needs to be retransmitted
         else:
+            if TRACE > 0:
+                print("Entity A - Packet Corrupted, need Acknowledgement number: " + str(self.acknum))
             self.transmit()
 
     # Called when A's timer goes off. Retransmit a lost packet
     def timer_interrupt(self):
+        if TRACE > 0:
+            print("Entity A - Packet Timed Out, retransmitting for Acknowledgement number: " + str(self.acknum))
         self.transmit()
 
 
@@ -191,6 +197,8 @@ class EntityB:
             to_layer5(self, Msg(packet.payload))
             pkt = Pkt(self.seqnum, self.acknum, checksum, packet.payload)
             to_layer3(self, pkt)
+            if TRACE > 0:
+                print("Entity B - Acknowledged Packet sequence number: " + str(self.acknum))
 
             # Advance the sequence number and use it as an acknum
             self.seqnum = 1 - self.seqnum
@@ -198,6 +206,8 @@ class EntityB:
 
         # Resend the packet intended to be received
         else:
+            if TRACE > 0:
+                print("Entity B - Packet corrupted, sending request for sequence number: " + str(self.acknum))
             pkt = Pkt(1 - self.seqnum, 1 - self.seqnum, checksum, packet.payload)
             to_layer3(self, pkt)
 
